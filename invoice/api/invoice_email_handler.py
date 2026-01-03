@@ -246,9 +246,13 @@ def create_lieferando_invoice_doc(communication_doc, pdf_attachment, extracted_d
         "supplier_name": extracted_data.get("supplier_name") or "yd.yourdelivery GmbH",
         "supplier_email": extracted_data.get("supplier_email") or communication_doc.sender,
         "supplier_ust_idnr": extracted_data.get("supplier_ust_idnr"),
+        "supplier_geschäftsführer": extracted_data.get("supplier_geschäftsführer"),
+        "supplier_amtsgericht": extracted_data.get("supplier_amtsgericht"),
+        "supplier_hrb": extracted_data.get("supplier_hrb"),
         "supplier_iban": extracted_data.get("supplier_iban"),
         "restaurant_name": extracted_data.get("restaurant_name"),
         "customer_number": extracted_data.get("customer_number"),
+        "customer_tax_number": extracted_data.get("customer_tax_number"),
         "customer_company": extracted_data.get("customer_company"),
         "restaurant_address": extracted_data.get("restaurant_address"),
         "customer_bank_iban": extracted_data.get("customer_bank_iban"),
@@ -256,12 +260,21 @@ def create_lieferando_invoice_doc(communication_doc, pdf_attachment, extracted_d
         "total_revenue": extracted_data.get("total_revenue") or 0,
         "online_paid_orders": extracted_data.get("online_paid_orders") or 0,
         "online_paid_amount": extracted_data.get("online_paid_amount") or 0,
+        "cash_paid_orders": extracted_data.get("cash_paid_orders") or 0,
+        "cash_paid_amount": extracted_data.get("cash_paid_amount") or 0,
+        "cash_service_fee_amount": extracted_data.get("cash_service_fee_amount") or 0,
+        "chargeback_orders": extracted_data.get("chargeback_orders") or 0,
+        "chargeback_amount": extracted_data.get("chargeback_amount") or 0,
         "ausstehende_am_datum": extracted_data.get("invoice_date"),
-        "ausstehende_onlinebezahlungen_betrag": extracted_data.get("outstanding_balance") or extracted_data.get("total_revenue") or 0,
+        "ausstehende_onlinebezahlungen_betrag": extracted_data.get("outstanding_balance") or 0,
         "rechnungsausgleich_betrag": extracted_data.get("total_amount") or 0,
         "auszahlung_gesamt": extracted_data.get("payout_amount") or 0,
+        "zu_begleichender_betrag": extracted_data.get("zu_begleichender_betrag") or 0,
+        "confirmation_payment_date": extracted_data.get("confirmation_payment_date"),
+        "confirmation_code_message": extracted_data.get("confirmation_code_message"),
         "service_fee_rate": extracted_data.get("service_fee_rate") or 30,
         "service_fee_amount": extracted_data.get("service_fee_amount") or 0,
+        "admin_fee_rate": extracted_data.get("admin_fee_rate") or 0.64,
         "admin_fee_amount": extracted_data.get("admin_fee_amount") or 0,
         "subtotal": extracted_data.get("subtotal") or 0,
         "tax_rate": extracted_data.get("tax_rate") or 19,
@@ -683,24 +696,91 @@ def extract_lieferando_fields(full_text: str) -> dict:
         data["period_start"] = parse_date(period_match.group(1))
         data["period_end"] = parse_date(period_match.group(2))
     
-    orders_match = re.search(r'(\d+)\s+Bestellung', full_text)
-    if orders_match:
-        data["total_orders"] = int(orders_match.group(1))
-        data["online_paid_orders"] = int(orders_match.group(1))
-    
+    # Lieferando.de satırı (toplam sipariş + toplam ciro) - 1. sayfa
+    # Örnek: "Lieferando.de (02-11-2025 bis einschließlich 08-11-2025): 26 Bestellungen im Wert von € 627,59"
+    lieferando_line_match = re.search(
+        r'Lieferando\.de\s*\([^)]+\)\s*:\s*(\d+)\s+Bestellungen\s+im\s+Wert\s+von\s*€\s*([\d,\.]+)',
+        full_text,
+        re.IGNORECASE
+    )
+    if lieferando_line_match:
+        try:
+            data["total_orders"] = int(lieferando_line_match.group(1))
+        except ValueError:
+            pass
+        amount = parse_decimal(lieferando_line_match.group(2))
+        if amount is not None:
+            data["total_revenue"] = amount
+
+    # Fallback: "Ihr Umsatz in der Zeit ..." satırı (toplam ciro)
     revenue_match = re.search(r'Ihr Umsatz in der Zeit[^€]*€\s*([\d,\.]+)', full_text)
-    if revenue_match:
+    if revenue_match and data.get("total_revenue") is None:
         amount = parse_decimal(revenue_match.group(1))
         if amount is not None:
             data["total_revenue"] = amount
-            data["online_paid_amount"] = amount
-    else:
-        gesamt_match = re.search(r'Gesamt\s+\d+\s+Bestellung[^€]*€\s*([\d,\.]+)', full_text)
+
+    # Fallback: "Gesamt X Bestellungen im Wert von € ..."
+    if not data.get("total_orders") or data.get("total_revenue") is None:
+        gesamt_match = re.search(
+            r'Gesamt\s+(\d+)\s+Bestellungen?[^€]*€\s*([\d,\.]+)',
+            full_text,
+            re.IGNORECASE
+        )
         if gesamt_match:
-            amount = parse_decimal(gesamt_match.group(1))
-            if amount is not None:
+            try:
+                data["total_orders"] = int(gesamt_match.group(1))
+            except ValueError:
+                pass
+            amount = parse_decimal(gesamt_match.group(2))
+            if amount is not None and data.get("total_revenue") is None:
                 data["total_revenue"] = amount
-                data["online_paid_amount"] = amount
+
+    # Verwaltungsgebühr (Online-Zahlungen) satırı: online sipariş sayısı + online sipariş tutarı
+    # Örnek: "Verwaltungsgebühr (Online-Zahlungen) (...): 21 Bestellungen im Wert von € 446,50"
+    admin_title_match = re.search(
+        r'Verwaltungsgebühr\s*\(Online-Zahlungen\)\s*\([^)]+\)\s*:\s*(\d+)\s+Bestellungen\s+im\s+Wert\s+von\s*€\s*([\d,\.]+)',
+        full_text,
+        re.IGNORECASE
+    )
+    if admin_title_match:
+        try:
+            data["online_paid_orders"] = int(admin_title_match.group(1))
+        except ValueError:
+            pass
+        amount = parse_decimal(admin_title_match.group(2))
+        if amount is not None:
+            data["online_paid_amount"] = amount
+
+    # Verwaltungsgebühr satırındaki rate ve count: "Servicegebühr: € 0,64 x 21"
+    admin_rate_match = re.search(
+        r'Verwaltungsgebühr\s*\(Online-Zahlungen\)[\s\S]*?Servicegebühr:\s*€\s*([\d,\.]+)\s*x\s*(\d+)',
+        full_text,
+        re.IGNORECASE
+    )
+    if admin_rate_match:
+        rate = parse_decimal(admin_rate_match.group(1))
+        try:
+            count = int(admin_rate_match.group(2))
+        except ValueError:
+            count = None
+
+        if rate is not None:
+            data["admin_fee_rate"] = rate
+        if count is not None and (not data.get("online_paid_orders")):
+            data["online_paid_orders"] = count
+        if rate is not None and count is not None:
+            data["admin_fee_amount"] = round(rate * count, 2)
+
+    # Türetilen değerler (eğer PDF'de doğrudan yoksa)
+    if (data.get("total_orders") is not None and data.get("online_paid_orders") is not None) and not data.get("cash_paid_orders"):
+        cash_orders = max(0, int(data["total_orders"]) - int(data["online_paid_orders"]))
+        if cash_orders > 0:
+            data["cash_paid_orders"] = cash_orders
+
+    if (data.get("total_revenue") is not None and data.get("online_paid_amount") is not None) and data.get("cash_paid_amount") is None:
+        cash_amount = round(float(data["total_revenue"]) - float(data["online_paid_amount"]), 2)
+        if cash_amount > 0:
+            data["cash_paid_amount"] = cash_amount
     
     service_fee_match = re.search(r'Servicegebühr:\s*([\d,\.]+)%[^€]*€\s*[\d,\.]+\s*€\s*([\d,\.]+)', full_text)
     if service_fee_match:
@@ -712,11 +792,7 @@ def extract_lieferando_fields(full_text: str) -> dict:
         if amount is not None:
             data["service_fee_amount"] = amount
     
-    admin_fee_match = re.search(r'Verwaltungsgebühr.*?\n\s*Servicegebühr:\s*€\s*([\d,\.]+)\s+x\s+\d+', full_text, re.DOTALL)
-    if admin_fee_match:
-        amount = parse_decimal(admin_fee_match.group(1))
-        if amount is not None:
-            data["admin_fee_amount"] = amount
+    # NOTE: Eski regex (admin_fee_amount'a yanlış değer yazıyordu) kaldırıldı.
     
     subtotal_match = re.search(r'Zwischensumme\s*€\s*([\d,\.]+)', full_text)
     if subtotal_match:
@@ -739,6 +815,22 @@ def extract_lieferando_fields(full_text: str) -> dict:
         amount = parse_decimal(total_match.group(1))
         if amount is not None:
             data["total_amount"] = amount
+
+    # Chargeback / Reversal (Rückbuchung)
+    # Example: "Rückbuchung 2 Bestellungen im Wert von € 0,89"
+    chargeback_match = re.search(
+        r'R[üu]ckbuch\w*\s+(\d+)\s+Bestellungen?\s+im\s+Wert\s+von\s+€\s*([\d,\.]+)',
+        full_text,
+        re.IGNORECASE
+    )
+    if chargeback_match:
+        try:
+            data["chargeback_orders"] = int(chargeback_match.group(1))
+        except ValueError:
+            pass
+        cb_amount = parse_decimal(chargeback_match.group(2))
+        if cb_amount is not None:
+            data["chargeback_amount"] = cb_amount
     
     paid_match = re.search(r'Verrechnet mit eingegangenen Onlinebezahlungen\s*€\s*([\d,\.]+)', full_text)
     if paid_match:
@@ -779,6 +871,214 @@ def extract_lieferando_fields(full_text: str) -> dict:
     ust_match = re.search(r'USt\.-IdNr\.\s+(DE\d+)', full_text)
     if ust_match:
         data["supplier_ust_idnr"] = ust_match.group(1)
+    
+    # Steuernummer (Tax Number) extraction
+    # Pattern'ler: "Steuernummer: DE361596531" veya "Steuernummer: DE36/159/6531"
+    steuernummer_patterns = [
+        r'Steuernummer[:\s]+(DE\d+)',
+        r'Steuernummer[:\s]+([A-Z]{2}\d+)',
+        r'Steuernummer[:\s]+([A-Z]{2}[\d\/]+)',  # DE36/159/6531 formatı
+    ]
+    
+    for pattern in steuernummer_patterns:
+        tax_match = re.search(pattern, full_text, re.IGNORECASE)
+        if tax_match:
+            tax_number = tax_match.group(1).strip()
+            # Format düzelt (DE36/159/6531 -> DE361596531)
+            tax_number = tax_number.replace('/', '')
+            data["customer_tax_number"] = tax_number
+            break
+    
+    # Servicegebühren extraction (cash service fees)
+    # Pattern: "Servicegebühren (02-11-2025 bis einschließlich 08-11-2025): 5 Bestellungen im Wert von € 3,38"
+    servicegebuehren_match = re.search(
+        r'Servicegebühren\s*\([^)]+\):\s*(\d+)\s+Bestellungen\s+im\s+Wert\s+von\s+€\s*([\d,\.]+)',
+        full_text,
+        re.IGNORECASE
+    )
+    if servicegebuehren_match:
+        orders = int(servicegebuehren_match.group(1))
+        amount = parse_decimal(servicegebuehren_match.group(2))
+        if amount is not None:
+            # Bu satır cash service fees için olabilir
+            if not data.get("cash_paid_orders") or data.get("cash_paid_orders") == 0:
+                data["cash_paid_orders"] = orders
+            if not data.get("cash_service_fee_amount") or data.get("cash_service_fee_amount") == 0:
+                data["cash_service_fee_amount"] = amount
+
+    # Einzelauflistung - Order Items (PAGE 2)
+    # Tablo başlığı: "Datum # €"
+    # Satır örneği: "02-11-2025, 12:38:34 H7HH6B 22,00*" (sonundaki * online)
+    try:
+        order_items = []
+        lines = (full_text or "").splitlines()
+        header_idx = None
+        for i, line in enumerate(lines):
+            if line.strip() == "Datum # €" or ("Datum" in line and "#" in line and "€" in line and len(line.strip()) <= 15):
+                header_idx = i
+                break
+
+        if header_idx is not None:
+            row_re = re.compile(
+                r'^(?P<dt>\d{2}-\d{2}-\d{4},\s*\d{2}:\d{2}:\d{2})\s+(?P<oid>[A-Z0-9]+)\s+(?P<amt>[\d,\.]+)\*?$'
+            )
+            for line in lines[header_idx + 1:]:
+                clean = (line or "").strip()
+                if not clean:
+                    break
+                # dipnot / footer gelince dur
+                if clean.startswith("**") or "Powered by TCPDF" in clean:
+                    break
+                m = row_re.match(clean)
+                if not m:
+                    continue
+                dt_str = m.group("dt").strip()
+                oid = m.group("oid").strip()
+                amt_str = m.group("amt").strip()
+                is_online = 1 if clean.endswith("*") else 0
+                amt = parse_decimal(amt_str)
+                order_dt = None
+                try:
+                    order_dt = datetime.strptime(dt_str, "%d-%m-%Y, %H:%M:%S")
+                except Exception:
+                    order_dt = None
+                if amt is None:
+                    continue
+                order_items.append({
+                    "order_date": order_dt,
+                    "order_id": oid,
+                    "amount": amt,
+                    "is_online": is_online,
+                })
+
+        if order_items:
+            data["order_items"] = order_items
+    except Exception:
+        # Parsing hatası olursa ana extract'i bozma
+        pass
+
+    # Trinkgelder - Tip Items (PAGE 3) (opsiyonel)
+    # Eğer PDF'de "Trinkgelder" tablosu varsa: "Datum # €" başlığından sonra benzer satırlar gelir.
+    try:
+        tip_items = []
+        lines = (full_text or "").splitlines()
+        tips_start = None
+        for i, line in enumerate(lines):
+            if "Trinkgelder" in (line or ""):
+                tips_start = i
+                break
+        if tips_start is not None:
+            header_idx = None
+            for j in range(tips_start, len(lines)):
+                if (lines[j] or "").strip() == "Datum # €":
+                    header_idx = j
+                    break
+            if header_idx is not None:
+                row_re = re.compile(
+                    r'^(?P<dt>\d{2}-\d{2}-\d{4},\s*\d{2}:\d{2}:\d{2})\s+(?P<tid>[A-Z0-9]+)\s+(?P<amt>[\d,\.]+)$'
+                )
+                for line in lines[header_idx + 1:]:
+                    clean = (line or "").strip()
+                    if not clean:
+                        break
+                    if clean.startswith("**") or "Powered by TCPDF" in clean:
+                        break
+                    m = row_re.match(clean)
+                    if not m:
+                        continue
+                    dt_str = m.group("dt").strip()
+                    tid = m.group("tid").strip()
+                    amt = parse_decimal(m.group("amt").strip())
+                    tip_dt = None
+                    try:
+                        tip_dt = datetime.strptime(dt_str, "%d-%m-%Y, %H:%M:%S")
+                    except Exception:
+                        tip_dt = None
+                    if amt is None:
+                        continue
+                    tip_items.append({
+                        "tip_date": tip_dt,
+                        "tip_id": tid,
+                        "amount": amt,
+                    })
+        if tip_items:
+            data["tip_items"] = tip_items
+    except Exception:
+        pass
+
+    # Supplier footer fields (some PDFs include these as plain text)
+    # Geschäftsführer
+    try:
+        gf_match = re.search(r'Geschäftsführer\s*:\s*([^\n]+)', full_text, re.IGNORECASE)
+        if gf_match:
+            gf = (gf_match.group(1) or "").strip()
+            if gf:
+                data["supplier_geschäftsführer"] = gf
+        else:
+            # Sometimes names follow on next line(s)
+            gf_block = re.search(r'Geschäftsführer\s*:\s*([\s\S]{0,120})', full_text, re.IGNORECASE)
+            if gf_block:
+                block = (gf_block.group(1) or "").strip()
+                # take first 2 lines max, stop before common next labels
+                lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+                if lines:
+                    joined = " ".join(lines[:2])
+                    joined = re.split(r'\b(IBAN|USt\.?-IdNr|HRB|Amtsgericht|T:|Tel\.?)\b', joined, flags=re.IGNORECASE)[0].strip()
+                    if joined:
+                        data["supplier_geschäftsführer"] = joined
+    except Exception:
+        pass
+
+    # Amtsgericht
+    try:
+        amts_match = re.search(r'Amtsgericht\s*[:\s]+([^\n]+)', full_text, re.IGNORECASE)
+        if amts_match:
+            amts = (amts_match.group(0) or "").strip()
+            # keep full "Amtsgericht Berlin-..." text for print format
+            if amts:
+                data["supplier_amtsgericht"] = amts
+    except Exception:
+        pass
+
+    # HRB
+    try:
+        hrb_match = re.search(r'HRB\s*[:\s]+([A-Z0-9]+)', full_text, re.IGNORECASE)
+        if hrb_match:
+            hrb = (hrb_match.group(1) or "").strip()
+            if hrb:
+                data["supplier_hrb"] = hrb
+    except Exception:
+        pass
+
+    # Confirmation & Payment fields (only present on some documents)
+    try:
+        due_match = re.search(r'Zu\s+begleichender\s+Betrag\s*:\s*€?\s*([\d,\.]+)', full_text, re.IGNORECASE)
+        if due_match:
+            amt = parse_decimal(due_match.group(1))
+            if amt is not None:
+                data["zu_begleichender_betrag"] = amt
+    except Exception:
+        pass
+
+    try:
+        # Example: "Am 02-11-2025 wurde an Sie ..."
+        conf_date_match = re.search(r'Am\s+(\d{2}[-\.]\d{2}[-\.]\d{4})\s+wurde\s+an\s+Sie', full_text, re.IGNORECASE)
+        if conf_date_match:
+            data["confirmation_payment_date"] = parse_date(conf_date_match.group(1).replace(".", "-"))
+    except Exception:
+        pass
+
+    try:
+        if re.search(r'Bestätigungscode', full_text, re.IGNORECASE):
+            # Grab the line/paragraph containing "Bestätigungscode" (short)
+            snippet_match = re.search(r'(.{0,10}Bestätigungscode.{0,220})', full_text, re.IGNORECASE | re.DOTALL)
+            if snippet_match:
+                msg = (snippet_match.group(1) or "").replace("\n", " ").strip()
+                msg = re.sub(r'\s+', ' ', msg)
+                if msg:
+                    data["confirmation_code_message"] = msg[:255]
+    except Exception:
+        pass
     
     return data
 

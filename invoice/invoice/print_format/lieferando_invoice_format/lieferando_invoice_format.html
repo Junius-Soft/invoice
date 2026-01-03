@@ -29,8 +29,9 @@
 			flex-direction: column;
 		}
 		
-		.page:last-child {
-			page-break-after: avoid;
+		/* Avoid trailing blank page: don't rely on :last-child (whitespace text nodes can break it) */
+		.page:last-of-type {
+			page-break-after: auto;
 			min-height: auto;
 		}
 		
@@ -88,8 +89,8 @@
 		}
 		
 		.cc-logo {
-			max-width: 155px;
-			max-height: 55px;
+			max-width: 120px;
+			max-height: 42px;
 			height: auto;
 			width: auto;
 			object-fit: contain;
@@ -117,22 +118,23 @@
 		
 		.invoice-details-inline {
 			display: grid;
-			grid-template-columns: 1fr 2fr 1fr;
+			grid-template-columns: 1fr 1fr;
+			column-gap: 48px;
 			margin-bottom: 4px;
 		}
 		
 		.invoice-details-inline > div:first-child {
-			grid-column: 1;
 			text-align: left;
+			white-space: nowrap;
 		}
 		
 		.invoice-details-inline > div:last-child {
-			grid-column: 2;
-			text-align: center;
+			text-align: left;
+			white-space: nowrap;
 		}
 		
 		.invoice-details-inline-center {
-			text-align: center;
+			text-align: left;
 		}
 		
 		/* Services Section */
@@ -152,6 +154,10 @@
 		
 		.service-item {
 			margin-bottom: 18px;
+		}
+		/* "Zwischensumme" üstündeki gereksiz boşluğu azalt */
+		.services-section .service-item:last-child {
+			margin-bottom: 6px;
 		}
 		
 		.service-title {
@@ -187,6 +193,8 @@
 		
 		.service-fee {
 			font-weight: normal;
+			/* "Servicegebühr:" satırlarını bir tab sağa kaydır */
+			padding-left: 28px;
 		}
 		
 		.service-euro {
@@ -201,7 +209,7 @@
 		
 		/* Amounts Summary */
 		.amounts-section {
-			margin-top: 8px;
+			margin-top: 0;
 			margin-bottom: 0;
 			font-size: 11pt;
 		}
@@ -290,24 +298,36 @@
 		
 		.supplier-details {
 			display: grid;
-			grid-template-columns: 1.2fr 1.15fr 1.6fr 1fr;
-			column-gap: 10px;
+			grid-template-columns: 1.25fr 1.25fr 1.55fr 1.15fr;
+			column-gap: 12px;
+			align-items: start;
 			line-height: 1.35;
 			font-size: 9pt;
-			width: 95%;
+			width: 100%;
 			box-sizing: border-box;
 		}
 		
 		.supplier-details-column {
-			overflow-wrap: break-word;
-			word-wrap: break-word;
+			overflow-wrap: normal;
+			word-break: normal;
 			min-width: 0;
 		}
 		
 		.supplier-details-row {
 			margin-bottom: 2px;
-			word-break: break-word;
-			overflow-wrap: anywhere;
+			overflow-wrap: normal;
+			word-break: normal;
+			hyphens: none;
+		}
+
+		/* 2. ekran gibi: sağ kolonlarda satır kırılmasını minimuma indir */
+		.supplier-details-column:nth-child(3) .supplier-details-row,
+		.supplier-details-column:nth-child(4) .supplier-details-row {
+			white-space: nowrap;
+		}
+		/* Adres kolonu kırılabilir */
+		.supplier-details-column:nth-child(1) .supplier-details-row {
+			white-space: normal;
 		}
 		
 		/* Revenue Info */
@@ -430,7 +450,7 @@
 			border-collapse: collapse !important;
 			border-spacing: 0 !important;
 			font-size: 9pt !important;
-			margin-top: 6px !important;
+			margin-top: 12px !important; /* sipariş tablosu ile üst satır arasına biraz boşluk */
 			margin-left: 0 !important;
 			margin-right: auto !important;
 			line-height: 1.1 !important;
@@ -690,9 +710,19 @@
 		</div>
 		
 		<div class="invoice-details">
-			<div class="invoice-details-row">
-				<span class="invoice-details-label">Kundennummer:</span>
-				<span class="invoice-details-value">{{ doc.customer_number }}</span>
+			<div class="invoice-details-inline">
+				<div>
+					<span class="invoice-details-label">Kundennummer:</span>
+					<span class="invoice-details-value">{{ doc.customer_number }}</span>
+				</div>
+				{% if doc.get("customer_tax_number") %}
+				<div class="invoice-details-inline-center">
+					<span class="invoice-details-label">Steuernummer:</span>
+					<span class="invoice-details-value">{{ doc.customer_tax_number }}</span>
+				</div>
+				{% else %}
+				<div></div>
+				{% endif %}
 			</div>
 			<div class="invoice-details-inline">
 				<div>
@@ -708,6 +738,15 @@
 		
 		<div class="services-section">
 			<div class="services-intro">Folgende Leistungen stellen wir Ihnen in Rechnung:</div>
+
+			{%- set total_orders_i = doc.total_orders|int if doc.total_orders else 0 -%}
+			{%- set total_revenue_f = doc.total_revenue|float if doc.total_revenue else 0.0 -%}
+			{%- set cash_orders_i = doc.cash_paid_orders|int if doc.cash_paid_orders else 0 -%}
+			{%- set cash_amount_f = doc.cash_paid_amount|float if doc.cash_paid_amount else 0.0 -%}
+			{%- set online_orders_i = (doc.online_paid_orders|int if doc.online_paid_orders else max(0, total_orders_i - cash_orders_i)) -%}
+			{%- set online_amount_f = (doc.online_paid_amount|float if doc.online_paid_amount else max(0.0, total_revenue_f - cash_amount_f)) -%}
+			{%- set admin_rate_f = doc.admin_fee_rate|float if doc.admin_fee_rate else 0.64 -%}
+			{%- set admin_amount_f = (doc.admin_fee_amount|float if doc.admin_fee_amount else round(admin_rate_f * online_orders_i, 2)) -%}
 			
 			<div class="service-item">
 				<div class="service-title">Lieferando.de ({{ frappe.utils.format_date(doc.period_start, "dd-MM-yyyy") }} bis einschließlich {{ frappe.utils.format_date(doc.period_end, "dd-MM-yyyy") }}): {{ doc.total_orders }} Bestellungen im Wert von € {{ format_currency(doc.total_revenue) }}</div>
@@ -719,38 +758,49 @@
 			</div>
 			
 			<div class="service-item">
-				<div class="service-title">Verwaltungsgebühr (Online-Zahlungen) ({{ frappe.utils.format_date(doc.period_start, "dd-MM-yyyy") }} bis einschließlich {{ frappe.utils.format_date(doc.period_end, "dd-MM-yyyy") }}): {{ doc.online_paid_orders }} Bestellungen im Wert von € {{ format_currency(doc.online_paid_amount) }}</div>
-				<div class="service-fee-row service-fee-row-underline">
-					<span class="service-fee">Servicegebühr: € {{ format_currency(doc.admin_fee_rate) }} x {{ doc.online_paid_orders }}</span>
+				<div class="service-title">Verwaltungsgebühr (Online-Zahlungen) ({{ frappe.utils.format_date(doc.period_start, "dd-MM-yyyy") }} bis einschließlich {{ frappe.utils.format_date(doc.period_end, "dd-MM-yyyy") }}): {{ online_orders_i }} Bestellungen im Wert von € {{ format_currency(online_amount_f) }}</div>
+				<div class="service-fee-row{% if doc.cash_paid_orders and doc.cash_paid_orders > 0 %}{% else %} service-fee-row-underline{% endif %}">
+					<span class="service-fee">Servicegebühr: € {{ format_currency(admin_rate_f) }} x {{ online_orders_i }}</span>
 					<span class="service-euro">€</span>
-					<span class="service-amount">{{ format_currency(doc.admin_fee_amount) }}</span>
+					<span class="service-amount">{{ format_currency(admin_amount_f) }}</span>
 				</div>
 			</div>
+
+			{% if doc.cash_paid_orders and doc.cash_paid_orders > 0 %}
+			<div class="service-item">
+				<div class="service-title">Servicegebühren ({{ frappe.utils.format_date(doc.period_start, "dd-MM-yyyy") }} bis einschließlich {{ frappe.utils.format_date(doc.period_end, "dd-MM-yyyy") }}): {{ doc.cash_paid_orders }} Bestellungen im Wert von € {{ format_currency(doc.cash_service_fee_amount if doc.cash_service_fee_amount else 0) }}</div>
+				<div class="service-fee-row service-fee-row-underline">
+					<span class="service-fee"></span>
+					<span class="service-euro">€</span>
+					<span class="service-amount">{{ format_currency(doc.cash_service_fee_amount if doc.cash_service_fee_amount else 0) }}</span>
+				</div>
+			</div>
+			{% endif %}
 		</div>
 		
 		<div class="amounts-section">
 			<div class="amount-row">
-				<span class="amount-label">Zwischensumme:</span>
+				<span class="amount-label">Zwischensumme</span>
 				<span class="amount-euro">€</span>
 				<span class="amount-value">{{ format_currency(doc.subtotal) }}</span>
 			</div>
 			<div class="amount-row amount-row-underline">
-				<span class="amount-label">MwSt. ({{ "{:,.1f}".format(doc.tax_rate).replace(".", ",") }}% von € {{ format_currency(doc.subtotal) }}):</span>
+				<span class="amount-label">MwSt. ({{ "{:,.1f}".format(doc.tax_rate).replace(".", ",") }}% von € {{ format_currency(doc.subtotal) }})</span>
 				<span class="amount-euro">€</span>
 				<span class="amount-value">{{ format_currency(doc.tax_amount) }}</span>
 			</div>
 			<div class="amount-row total-row">
-				<span class="amount-label">Gesamtbetrag dieser Rechnung:</span>
+				<span class="amount-label">Gesamtbetrag dieser Rechnung</span>
 				<span class="amount-euro">€</span>
 				<span class="amount-value">{{ format_currency(doc.total_amount) }}</span>
 			</div>
 			<div class="amount-row amount-row-underline">
-				<span class="amount-label">Verrechnet mit eingegangenen Onlinebezahlungen:</span>
+				<span class="amount-label">Verrechnet mit eingegangenen Onlinebezahlungen</span>
 				<span class="amount-euro">€</span>
 				<span class="amount-value">{{ format_currency(doc.paid_online_payments) }}</span>
 			</div>
 			<div class="amount-row outstanding-row">
-				<span class="amount-label">Offener Rechnungsbetrag:</span>
+				<span class="amount-label">Offener Rechnungsbetrag</span>
 				<span class="amount-euro">€</span>
 				<span class="amount-value">{{ format_currency(doc.outstanding_amount) }}</span>
 			</div>
@@ -775,10 +825,8 @@
 				</div>
 				<div class="supplier-details-column">
 					<div class="supplier-details-row">Geschäftsführer:</div>
-					{% if doc.supplier_geschäftsführer %}
-						{% for part in doc.supplier_geschäftsführer.split(',') %}
-							<div class="supplier-details-row">{{ part.strip() }}</div>
-						{% endfor %}
+					{% if doc.get("supplier_geschäftsführer") %}
+						<div class="supplier-details-row">{{ doc.get("supplier_geschäftsführer") }}</div>
 					{% endif %}
 					<div class="supplier-details-row">{{ doc.supplier_email }}</div>
 					<div class="supplier-details-row">T: {{ doc.supplier_phone }}</div>
@@ -792,8 +840,12 @@
 					{% endif %}
 				</div>
 				<div class="supplier-details-column">
-					<div class="supplier-details-row">{{ doc.supplier_amtsgericht }}</div>
-					<div class="supplier-details-row">HRB: {{ doc.supplier_hrb }}</div>
+					{% if doc.get("supplier_amtsgericht") %}
+						<div class="supplier-details-row">{{ doc.supplier_amtsgericht }}</div>
+					{% endif %}
+					{% if doc.get("supplier_hrb") %}
+						<div class="supplier-details-row">HRB {{ doc.supplier_hrb }}</div>
+					{% endif %}
 					<div class="supplier-details-row">USt.-IdNr.: {{ doc.supplier_ust_idnr }}</div>
 				</div>
 			</div>
@@ -829,6 +881,12 @@
 				<div>Online bezahlt *</div>
 				<div>{{ doc.online_paid_orders }} Bestellungen im Wert von € {{ format_currency(doc.online_paid_amount) }}</div>
 			</div>
+			{% if doc.chargeback_orders and doc.chargeback_orders > 0 %}
+			<div class="summary-row">
+				<div>Rückbuchung</div>
+				<div>{{ doc.chargeback_orders }} Bestellungen im Wert von € {{ format_currency(doc.chargeback_amount) }}</div>
+			</div>
+			{% endif %}
 			{% if doc.stamp_card_amount and doc.stamp_card_amount > 0 %}
 			<div class="summary-row">
 				<div style="white-space: nowrap;">davon mit Stempelkarte bezahlt **</div>
@@ -913,7 +971,8 @@
 	</div>
 	
 	<!-- PAGE 3: Trinkgelder (Tips) -->
-	{% if doc.tips_amount and doc.tips_amount > 0 %}
+	{# Bahşiş detay satırı yoksa 3. sayfayı hiç gösterme #}
+	{% if doc.tip_items and doc.tip_items|length > 0 %}
 	<div class="page page-tips">
 		<div class="tips-title">Trinkgelder</div>
 		

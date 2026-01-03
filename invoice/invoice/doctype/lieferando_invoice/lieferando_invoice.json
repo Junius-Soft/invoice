@@ -8,6 +8,7 @@
  "field_order": [
   "invoice_section",
   "invoice_number",
+  "currency",
   "invoice_date",
   "period_start",
   "col_break_1",
@@ -105,6 +106,16 @@
    "unique": 1
   },
   {
+   "default": "EUR",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Currency",
+   "options": "Currency",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
    "default": "Today",
    "fieldname": "invoice_date",
    "fieldtype": "Date",
@@ -113,20 +124,20 @@
    "reqd": 1
   },
   {
-   "description": "Abrechnungszeitraum Start",
+   "description": "Billing period start date",
    "fieldname": "period_start",
    "fieldtype": "Date",
-  "label": "Period From"
+  "label": "Period Start"
   },
   {
    "fieldname": "col_break_1",
    "fieldtype": "Column Break"
   },
   {
-   "description": "Abrechnungszeitraum Ende",
+   "description": "Billing period end date",
    "fieldname": "period_end",
    "fieldtype": "Date",
-  "label": "Period To"
+  "label": "Period End"
   },
   {
    "default": "Draft",
@@ -214,20 +225,20 @@
   {
    "fieldname": "restaurant_address",
    "fieldtype": "Small Text",
-   "label": "Adresse"
+   "label": "Address (Complete)"
   },
   {
    "fieldname": "col_break_3",
    "fieldtype": "Column Break"
   },
   {
-   "description": "z.B. CC CULINARY COLLECTIVE GmbH",
+   "description": "e.g. CC CULINARY COLLECTIVE GmbH",
    "fieldname": "customer_company",
    "fieldtype": "Data",
-   "label": "Firma"
+   "label": "Company"
   },
   {
-   "description": "Bankkonto f\u00fcr Auszahlung",
+   "description": "Bank account for payout",
    "fieldname": "customer_bank_iban",
    "fieldtype": "Data",
   "label": "Payout IBAN"
@@ -247,16 +258,17 @@
   },
   {
    "default": "0",
-   "description": "Gesamtanzahl der Bestellungen",
+   "description": "Total number of orders",
    "fieldname": "total_orders",
    "fieldtype": "Int",
   "label": "Total Orders"
   },
   {
-   "description": "Gesamtumsatz im Abrechnungszeitraum",
+   "description": "Total revenue in the billing period",
    "fieldname": "total_revenue",
    "fieldtype": "Currency",
-  "label": "Revenue (Period)",
+  "label": "Total Revenue (\u20ac)",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -272,7 +284,8 @@
   {
    "fieldname": "online_paid_amount",
    "fieldtype": "Currency",
-  "label": "Online Paid Amount",
+  "label": "Online Paid Amount (\u20ac)",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -288,7 +301,8 @@
    "fieldname": "cash_paid_amount",
    "fieldtype": "Currency",
    "hidden": 0,
-   "label": "Cash Paid Amount",
+   "label": "Cash Paid Amount (\u20ac)",
+   "options": "currency",
    "permlevel": 0,
    "precision": "2"
   },
@@ -305,7 +319,8 @@
    "fieldname": "chargeback_amount",
    "fieldtype": "Currency",
    "hidden": 0,
-   "label": "Chargeback Amount",
+   "label": "Chargeback Amount (\u20ac)",
+   "options": "currency",
    "permlevel": 0,
    "precision": "2"
   },
@@ -314,13 +329,14 @@
    "fieldname": "cash_service_fee_amount",
    "fieldtype": "Currency",
    "hidden": 0,
-   "label": "Cash Service Fee Amount",
+   "label": "Cash Service Fee Amount (\u20ac)",
+   "options": "currency",
    "permlevel": 0,
    "precision": "2"
   },
   {
    "default": "0",
-   "description": "Stempelkarte (Loyalty Program) sipariş sayısı",
+   "description": "Orders paid with loyalty program (Stempelkarte). Lieferando's loyalty program where customers earn free orders after a certain number of purchases.",
    "fieldname": "stamp_card_orders",
    "fieldtype": "Int",
    "hidden": 0,
@@ -329,11 +345,12 @@
   },
   {
    "default": "0",
-   "description": "Stempelkarte (Loyalty Program) tutarı",
+   "description": "Amount paid with loyalty program (Stempelkarte). Free orders earned by customers through Lieferando's loyalty program.",
    "fieldname": "stamp_card_amount",
    "fieldtype": "Currency",
    "hidden": 0,
    "label": "Stamp Card Amount",
+   "options": "currency",
    "permlevel": 0,
    "precision": "2"
   },
@@ -346,13 +363,14 @@
    "default": "30",
    "fieldname": "service_fee_rate",
    "fieldtype": "Percent",
-  "label": "Service Fee (%)"
+  "label": "Service Commission Rate (%)"
   },
   {
-   "description": "30% von Umsatz (z.B. 30% von \u20ac24,00 = \u20ac7,20)",
+   "description": "30% of revenue (e.g. 30% of \u20ac24.00 = \u20ac7.20)",
    "fieldname": "service_fee_amount",
    "fieldtype": "Currency",
-  "label": "Service Fee Amount",
+  "label": "Service Fee Amount (\u20ac)",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -360,10 +378,11 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Online-Zahlungen Verwaltungsgeb\u00fchr (z.B. \u20ac0,64 x 1)",
+   "description": "Total administration fee (Online Orders Count \u00d7 Admin Fee Rate)",
    "fieldname": "admin_fee_amount",
    "fieldtype": "Currency",
-  "label": "Admin Fee",
+  "label": "Admin Fee Amount (Total)",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -386,6 +405,7 @@
    "fieldname": "subtotal",
    "fieldtype": "Currency",
   "label": "Subtotal",
+   "options": "currency",
    "precision": "2",
    "reqd": 1
   },
@@ -398,6 +418,7 @@
    "fieldname": "tax_amount",
    "fieldtype": "Currency",
   "label": "VAT Amount",
+   "options": "currency",
    "precision": "2",
    "reqd": 1
   },
@@ -410,6 +431,7 @@
    "fieldname": "paid_online_payments",
    "fieldtype": "Currency",
   "label": "Offset by Online Payments",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -421,6 +443,7 @@
    "fieldname": "outstanding_amount",
    "fieldtype": "Currency",
   "label": "Outstanding Invoice Amount",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -433,6 +456,7 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
   "label": "TOTAL AMOUNT OF THIS INVOICE",
+   "options": "currency",
    "precision": "2",
    "reqd": 1
   },
@@ -443,16 +467,18 @@
   "label": "Payout"
   },
   {
-   "description": "Auszahlung auf das Bankkonto",
+   "description": "Payout to bank account",
    "fieldname": "payout_amount",
    "fieldtype": "Currency",
   "label": "Payout Amount",
+   "options": "currency",
    "precision": "2"
   },
   {
    "fieldname": "outstanding_balance",
    "fieldtype": "Currency",
   "label": "Outstanding Online Payments",
+   "options": "currency",
    "precision": "2"
   },
   {
@@ -472,7 +498,8 @@
    "bold": 1,
    "fieldname": "ausstehende_onlinebezahlungen_betrag",
    "fieldtype": "Currency",
-   "label": "Ausstehende Onlinebezahlungen",
+   "label": "Outstanding Online Payments",
+   "options": "currency",
    "precision": "2",
    "read_only": 1
   },
@@ -481,6 +508,7 @@
    "fieldname": "rechnungsausgleich_betrag",
    "fieldtype": "Currency",
   "label": "Invoice Settlement (with Invoice Number)",
+   "options": "currency",
    "precision": "2",
    "read_only": 1
   },
@@ -490,10 +518,11 @@
   },
   {
    "bold": 1,
-   "description": "Ausstehende Onlinebezahlungen - Rechnungsausgleich",
+   "description": "Outstanding online payments - Invoice settlement",
    "fieldname": "auszahlung_gesamt",
    "fieldtype": "Currency",
   "label": "TOTAL PAYOUT",
+   "options": "currency",
    "precision": "2",
    "read_only": 1
   },
@@ -538,7 +567,7 @@
    "read_only": 1
   },
   {
-   "description": "PDF Parsing Genauigkeit",
+   "description": "PDF parsing accuracy",
    "fieldname": "extraction_confidence",
    "fieldtype": "Percent",
    "label": "Extraction Confidence",
