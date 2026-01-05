@@ -2,7 +2,7 @@ app_name = "invoice"
 app_title = "invoice"
 app_publisher = "invoice"
 app_description = "invoice"
-app_email = "emrah@gmail.com"
+app_email = "idris.gemici61@gmail.com"
 app_license = "mit"
 
 # Apps
@@ -252,11 +252,30 @@ doc_events = {
 	}
 }
 
+# PDF Override - sadece get_pdf override (CSS inline için gerekli)
+# get_print override kaldırıldı - Frappe'nin standart get_print kullanılıyor
+boot_session = [
+	"invoice.custom_pdf.boot_session_with_patch"
+]
+before_request = [
+	"invoice.custom_pdf.patch_pdf_functions",
+	"invoice.weasyprint_override.apply_weasyprint_override",
+	"invoice.chrome_pdf.override_weasyprint_download_pdf"
+]
+
+# Chrome PDF Generator Hook
+pdf_generator = [
+	"invoice.chrome_pdf.chrome_pdf_generator"
+]
+
 # Scheduled Tasks
 # ---------------
+# NOT: Email sync için Frappe'in kendi mekanizması kullanılıyor
+# frappe.email.doctype.email_account.email_account.pull (her 10 dakikada bir)
+# sync_gmail_invoices() gereksiz olduğu için kaldırıldı
 
-scheduler_events = {
-	"all": [
-		"invoice.api.email_tasks.sync_gmail_invoices"
-	]
-}
+# scheduler_events = {
+# 	"all": [
+# 		"invoice.api.email_tasks.sync_gmail_invoices"
+# 	]
+# }

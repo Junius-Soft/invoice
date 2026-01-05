@@ -7,6 +7,9 @@ Extracts stamp_card_orders and stamp_card_amount from raw_text if available
 import frappe
 import re
 from frappe.utils import flt
+from invoice.api.constants import DOCTYPE_LIEFERANDO_INVOICE
+
+logger = frappe.logger("invoice.stamp_card", allow_site=frappe.local.site)
 
 def _extract_decimal_from_match(match, group_index=1):
     """Extract decimal value from regex match"""
@@ -44,16 +47,16 @@ def extract_stamp_card_from_text(raw_text):
 def update_invoice_stamp_card_data(invoice_name):
     """Update a single invoice with stamp card data"""
     try:
-        invoice = frappe.get_doc("Lieferando Invoice", invoice_name)
+        invoice = frappe.get_doc(DOCTYPE_LIEFERANDO_INVOICE, invoice_name)
         
         # Skip if already has stamp card data
         if invoice.stamp_card_orders and invoice.stamp_card_orders > 0:
-            print(f"  ⏭️  {invoice.invoice_number}: Zaten stamp_card verisi var (orders: {invoice.stamp_card_orders})")
+            logger.debug(f"{invoice.invoice_number}: Zaten stamp_card verisi var (orders: {invoice.stamp_card_orders})")
             return False
         
         # Extract from raw_text
         if not invoice.raw_text:
-            print(f"  ⚠️  {invoice.invoice_number}: raw_text yok, atlanıyor")
+            logger.warning(f"{invoice.invoice_number}: raw_text yok, atlanıyor")
             return False
         
         orders, amount = extract_stamp_card_from_text(invoice.raw_text)
@@ -63,14 +66,14 @@ def update_invoice_stamp_card_data(invoice_name):
             invoice.stamp_card_amount = flt(amount)
             invoice.save(ignore_permissions=True)
             frappe.db.commit()
-            print(f"  ✅ {invoice.invoice_number}: Güncellendi (orders: {orders}, amount: €{amount:.2f})")
+            logger.info(f"{invoice.invoice_number}: Güncellendi (orders: {orders}, amount: €{amount:.2f})")
             return True
         else:
-            print(f"  ⚠️  {invoice.invoice_number}: PDF'de stamp_card verisi bulunamadı")
+            logger.debug(f"{invoice.invoice_number}: PDF'de stamp_card verisi bulunamadı")
             return False
             
     except Exception as e:
-        print(f"  ❌ {invoice_name}: Hata - {str(e)}")
+        logger.error(f"{invoice_name}: Hata - {str(e)}")
         frappe.log_error(
             title="Stamp Card Update Error",
             message=f"Invoice: {invoice_name}\nError: {str(e)}"
@@ -79,13 +82,13 @@ def update_invoice_stamp_card_data(invoice_name):
 
 def update_all_invoices():
     """Update all Lieferando Invoices with stamp card data"""
-    print("=" * 80)
-    print("STAMP CARD (LOYALTY PROGRAM) VERİLERİNİ GÜNCELLEME")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("STAMP CARD (LOYALTY PROGRAM) VERİLERİNİ GÜNCELLEME")
+    logger.info("=" * 80)
     
     # Get all invoices
     invoices = frappe.get_all(
-        "Lieferando Invoice",
+        DOCTYPE_LIEFERANDO_INVOICE,
         fields=["name", "invoice_number"],
         filters={},
         order_by="creation desc"
@@ -96,7 +99,7 @@ def update_all_invoices():
     skipped = 0
     errors = 0
     
-    print(f"\nToplam {total} fatura bulundu.\n")
+    logger.info(f"Toplam {total} fatura bulundu.")
     
     for inv in invoices:
         result = update_invoice_stamp_card_data(inv.name)
@@ -107,37 +110,37 @@ def update_all_invoices():
         else:
             errors += 1
     
-    print("\n" + "=" * 80)
-    print("ÖZET:")
-    print(f"  Toplam: {total}")
-    print(f"  Güncellenen: {updated}")
-    print(f"  Atlanan: {skipped}")
-    print(f"  Hata: {errors}")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("ÖZET:")
+    logger.info(f"  Toplam: {total}")
+    logger.info(f"  Güncellenen: {updated}")
+    logger.info(f"  Atlanan: {skipped}")
+    logger.info(f"  Hata: {errors}")
+    logger.info("=" * 80)
 
 def update_single_invoice(invoice_number):
     """Update a single invoice by invoice number"""
-    print("=" * 80)
-    print(f"FATURA GÜNCELLEME: {invoice_number}")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info(f"FATURA GÜNCELLEME: {invoice_number}")
+    logger.info("=" * 80)
     
     invoice = frappe.get_all(
-        "Lieferando Invoice",
+        DOCTYPE_LIEFERANDO_INVOICE,
         fields=["name"],
         filters={"invoice_number": invoice_number},
         limit=1
     )
     
     if not invoice:
-        print(f"❌ Fatura bulunamadı: {invoice_number}")
+        logger.error(f"Fatura bulunamadı: {invoice_number}")
         return
     
     result = update_invoice_stamp_card_data(invoice[0].name)
     
     if result:
-        print(f"\n✅ Fatura başarıyla güncellendi: {invoice_number}")
+        logger.info(f"Fatura başarıyla güncellendi: {invoice_number}")
     else:
-        print(f"\n⚠️  Fatura güncellenemedi: {invoice_number}")
+        logger.warning(f"Fatura güncellenemedi: {invoice_number}")
 
 def update_single(invoice_number):
     """Update single invoice - for bench execute"""

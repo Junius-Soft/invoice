@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import frappe
+from invoice.api.constants import (
+	DOCTYPE_LIEFERANDO_INVOICE,
+	DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -64,12 +68,12 @@ def sync_lieferando_print_formats_from_repo(module: str = "invoice") -> dict[str
 	targets = [
 		{
 			"name": "Lieferando Invoice Format",
-			"doc_type": "Lieferando Invoice",
+			"doc_type": DOCTYPE_LIEFERANDO_INVOICE,
 			"slug": "lieferando_invoice_format",
 		},
 		{
 			"name": "Lieferando Invoice Analysis Format",
-			"doc_type": "Lieferando Invoice Analysis",
+			"doc_type": DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS,
 			"slug": "lieferando_invoice_analysis_format",
 		},
 	]
@@ -98,6 +102,7 @@ def sync_lieferando_print_formats_from_repo(module: str = "invoice") -> dict[str
 
 	frappe.db.commit()
 	return results
+
 
 
 

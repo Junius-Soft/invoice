@@ -74,6 +74,41 @@ frappe.ui.form.on('Lieferando Invoice Analysis', {
 				frm.save();
 			}, 300);
 		}
+	},
+	
+	refresh: function(frm) {
+		if (!frm.is_new()) {
+			frm.add_custom_button(__("PDF Oluştur ve Ekle"), function() {
+				frappe.call({
+					method: "invoice.api.invoice_email_handler.generate_and_attach_analysis_pdf",
+					args: {
+						analysis_name: frm.doc.name
+					},
+					freeze: true,
+					freeze_message: __("PDF oluşturuluyor..."),
+					callback: function(r) {
+						if (r.message && r.message.success) {
+							frm.reload_doc();
+							frappe.show_alert({
+								message: r.message.message || __("PDF başarıyla oluşturuldu ve eklendi"),
+								indicator: "green"
+							}, 3);
+						} else {
+							frappe.show_alert({
+								message: r.message ? r.message.message : __("PDF oluşturulurken hata oluştu"),
+								indicator: "red"
+							}, 5);
+						}
+					},
+					error: function(r) {
+						frappe.show_alert({
+							message: __("Hata: {0}", [r.message || "Bilinmeyen hata"]),
+							indicator: "red"
+						}, 5);
+					}
+				});
+			}, __("Actions"));
+		}
 	}
 });
 

@@ -3,6 +3,7 @@
 
 import frappe
 from frappe.model.document import Document
+from invoice.api.constants import DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS
 
 
 class LieferandoInvoice(Document):
@@ -15,31 +16,17 @@ class LieferandoInvoice(Document):
 		"""
 		try:
 			analysis_name = frappe.db.get_value(
-				"Lieferando Invoice Analysis",
+				DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS,
 				{"lieferando_invoice": self.name},
 				"name",
 			)
 			if not analysis_name:
 				return
 
-			# Always refresh JSON snapshot (safe: does not trigger Analysis validation)
-			try:
-				invoice_dict = self.as_dict(convert_dates_to_str=True)
-				frappe.db.set_value(
-					"Lieferando Invoice Analysis",
-					analysis_name,
-					"invoice_data_json",
-					frappe.as_json(invoice_dict, indent=2),
-					update_modified=False,
-				)
-			except Exception:
-				frappe.log_error(
-					title="Lieferando Analysis JSON Sync Error",
-					message=f"Failed to update invoice_data_json for Analysis linked to invoice {self.name}\n{frappe.get_traceback()}",
-				)
-
-			# Best-effort update of key fields commonly used in prints/reconciliation
-			fields_to_mirror = {
+			# Prepare all updates in one dict (JSON + mirror fields)
+			invoice_dict = self.as_dict(convert_dates_to_str=True)
+			fields_to_update = {
+				"invoice_data_json": frappe.as_json(invoice_dict, indent=2),
 				"restaurant_name": getattr(self, "restaurant_name", "") or "",
 				"customer_number": getattr(self, "customer_number", "") or "",
 				"customer_tax_number": getattr(self, "customer_tax_number", "") or "",
@@ -61,10 +48,11 @@ class LieferandoInvoice(Document):
 				"service_fee_rate": getattr(self, "service_fee_rate", 0) or 0,
 			}
 
+			# Single DB call to update all fields at once
 			frappe.db.set_value(
-				"Lieferando Invoice Analysis",
+				DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS,
 				analysis_name,
-				fields_to_mirror,
+				fields_to_update,
 				update_modified=False,
 			)
 		except Exception:

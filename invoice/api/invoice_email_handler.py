@@ -1,8 +1,21 @@
 import frappe
+from frappe import _
 import re
 import json
 from datetime import datetime
-from invoice.api.constants import DEFAULT_EXTRACTION_CONFIDENCE
+from invoice.api.constants import (
+	DEFAULT_EXTRACTION_CONFIDENCE,
+	FIELD_STATUS_DRAFT,
+	FIELD_PDF_FILE,
+	DOCTYPE_LIEFERANDO_INVOICE,
+	DOCTYPE_WOLT_INVOICE,
+	DOCTYPE_UBER_EATS_INVOICE,
+	FIELD_NETTING_REPORT_PDF,
+	USER_TYPE_SYSTEM,
+	COMMUNICATION_TYPE,
+	SENT_OR_RECEIVED_RECEIVED,
+	DOCTYPE_COMMUNICATION,
+)
 
 try:
     import PyPDF2
@@ -11,9 +24,17 @@ except ImportError:
 
 logger = frappe.logger("invoice.email_handler", allow_site=frappe.local.site)
 
+
+def _check_invoice_exists(doctype, invoice_number):
+    """Invoice number'a göre duplicate kontrolü yap"""
+    if not invoice_number:
+        return False
+    
+    return bool(frappe.db.exists(doctype, {"invoice_number": invoice_number}))
+
+
 def process_invoice_email(doc, method=None):
     """Communication DocType'ına gelen email'leri yakala ve fatura oluştur"""
-    print(f"[INVOICE] Email işleme başladı: {doc.subject} (Communication: {doc.name})")
     logger.info(f"Email işleme başladı: {doc.subject} (Communication: {doc.name})")
     
     stats = {
@@ -25,8 +46,7 @@ def process_invoice_email(doc, method=None):
     }
     
     try:
-        if doc.communication_type != "Communication" or doc.sent_or_received != "Received":
-            print(f"[INVOICE] Email atlandı - type: {doc.communication_type}, received: {doc.sent_or_received}")
+        if doc.communication_type != COMMUNICATION_TYPE or doc.sent_or_received != SENT_OR_RECEIVED_RECEIVED:
             logger.info(f"Email atlandı - type: {doc.communication_type}, received: {doc.sent_or_received}")
             return
         
@@ -35,7 +55,7 @@ def process_invoice_email(doc, method=None):
         
         attachments = frappe.get_all("File",
             filters={
-                "attached_to_doctype": "Communication",
+                "attached_to_doctype": DOCTYPE_COMMUNICATION,
                 "attached_to_name": doc.name,
             },
             fields=["name", "file_url", "file_name", "file_size"]
@@ -51,14 +71,11 @@ def process_invoice_email(doc, method=None):
         # ÖNEMLİ: "Ihre neue Aktivitätsübersicht" içeren email'ler UberEats faturaları
         is_uber_eats_report = "ihre neue aktivitätsübersicht" in subject
         if is_uber_eats_report:
-            print(f"[INVOICE] ✅ UberEats Aktivitätsübersicht email'i tespit edildi: {doc.subject}")
             logger.info(f"UberEats Aktivitätsübersicht email'i tespit edildi: {doc.subject}")
-            print(f"[INVOICE] Tüm PDF'ler taranacak ({len(pdf_attachments)} adet)")
             logger.info(f"Tüm PDF'ler taranacak ({len(pdf_attachments)} adet)")
             stats["total_detected"] = len(pdf_attachments)
             
             if not pdf_attachments:
-                print(f"[INVOICE] ⚠️ UberEats email'inde PDF bulunamadı")
                 logger.warning("UberEats email'inde PDF bulunamadı")
                 stats["errors"] = 1
                 show_summary_notification(stats, doc.subject)
@@ -67,14 +84,11 @@ def process_invoice_email(doc, method=None):
         # ÖNEMLİ: "Wolt payout report" içeren email'lerdeki tüm PDF'leri işle
         is_wolt_payout_report = "wolt payout report" in subject
         if is_wolt_payout_report:
-            print(f"[INVOICE] ✅ Wolt payout report email'i tespit edildi: {doc.subject}")
             logger.info(f"Wolt payout report email'i tespit edildi: {doc.subject}")
-            print(f"[INVOICE] Tüm PDF'ler taranacak ({len(pdf_attachments)} adet)")
             logger.info(f"Tüm PDF'ler taranacak ({len(pdf_attachments)} adet)")
             stats["total_detected"] = len(pdf_attachments)
             
             if not pdf_attachments:
-                print(f"[INVOICE] ⚠️ Wolt payout report email'inde PDF bulunamadı")
                 logger.warning("Wolt payout report email'inde PDF bulunamadı")
                 stats["errors"] = 1
                 show_summary_notification(stats, doc.subject)
@@ -82,15 +96,13 @@ def process_invoice_email(doc, method=None):
         
         # Normal fatura kontrolü - sadece özel email'ler değilse
         if not is_uber_eats_report and not is_wolt_payout_report:
-            keywords = ["invoice", "fatura", "rechnung", "facture", "bill"]
+            keywords = ["invoice", "fatura", "rechnung", "facture", "bill", "wolt"]
             has_invoice_subject = any(keyword in subject for keyword in keywords)
             
             if not has_invoice_subject:
-                print(f"[INVOICE] Email atlandı - fatura değil: {doc.subject}")
                 logger.info(f"Email atlandı - fatura değil: {doc.subject}")
                 return
             
-            print(f"[INVOICE] ✅ Fatura email'i tespit edildi: {doc.subject}")
             logger.info(f"Fatura email'i tespit edildi: {doc.subject}")
             stats["total_detected"] = 1
             
@@ -108,10 +120,8 @@ def process_invoice_email(doc, method=None):
                     # PDF içeriğini hızlıca kontrol et
                     has_uber_eats_header = check_pdf_has_uber_eats_header(pdf)
                     if not has_uber_eats_header:
-                        print(f"[INVOICE] ⏭️ PDF atlandı (Bestell- und Zahlungsübersicht yok): {pdf.file_name}")
                         logger.info(f"PDF atlandı (Bestell- und Zahlungsübersicht yok): {pdf.file_name}")
                         continue
-                    print(f"[INVOICE] ✅ PDF işlenecek (Bestell- und Zahlungsübersicht bulundu): {pdf.file_name}")
                     logger.info(f"PDF işlenecek (Bestell- und Zahlungsübersicht bulundu): {pdf.file_name}")
                 
                 # Wolt payout report email'lerinde: fatura PDF'lerini hemen işle, netting raporlarını ikinci tura bırak
@@ -121,13 +131,10 @@ def process_invoice_email(doc, method=None):
                         has_netting_report = check_pdf_has_wolt_netting_report(pdf)
                         if has_netting_report:
                             netting_pdfs.append(pdf)
-                            print(f"[INVOICE] 🔄 Netting raporu tespit edildi, ikinci turda eklenecek: {pdf.file_name}")
                             logger.info(f"Netting raporu tespit edildi (queue): {pdf.file_name}")
                         else:
-                            print(f"[INVOICE] ⏭️ PDF atlandı (Rechnung(Selbstfakturierung) ya da Netting yok): {pdf.file_name}")
                             logger.info(f"PDF atlandı (Rechnung(Selbstfakturierung) ya da Netting yok): {pdf.file_name}")
                         continue
-                    print(f"[INVOICE] ✅ PDF işlenecek (Rechnung(Selbstfakturierung) bulundu): {pdf.file_name}")
                     logger.info(f"PDF işlenecek (Rechnung(Selbstfakturierung) bulundu): {pdf.file_name}")
                 
                 invoice = create_invoice_from_pdf(doc, pdf)
@@ -142,10 +149,12 @@ def process_invoice_email(doc, method=None):
                     stats["already_processed"] += 1
             except Exception as e:
                 stats["errors"] += 1
+                error_message = f"Communication: {doc.name}\nSubject: {doc.subject}\nPDF: {pdf.file_name}\nError: {str(e)}\n{frappe.get_traceback()}"
                 frappe.log_error(
                     title="Invoice PDF Processing Error",
-                    message=f"PDF: {pdf.file_name}\nError: {str(e)}\n{frappe.get_traceback()}"
+                    message=error_message
                 )
+                logger.error(f"PDF işleme hatası: {pdf.file_name} - {str(e)}")
 
         # İkinci tur: netting raporlarını artık oluşmuş Wolt Invoice'lara ekle
         for net_pdf in netting_pdfs:
@@ -153,44 +162,64 @@ def process_invoice_email(doc, method=None):
                 handle_wolt_netting_report(doc, net_pdf)
             except Exception as e:
                 stats["errors"] += 1
+                error_message = f"Communication: {doc.name}\nSubject: {doc.subject}\nPDF: {net_pdf.file_name}\nError: {str(e)}\n{frappe.get_traceback()}"
                 frappe.log_error(
                     title="Wolt Netting PDF Error",
-                    message=f"PDF: {net_pdf.file_name}\nError: {str(e)}\n{frappe.get_traceback()}"
+                    message=error_message
                 )
+                logger.error(f"Wolt Netting PDF işleme hatası: {net_pdf.file_name} - {str(e)}")
         
-        frappe.db.commit()
-        print(f"[INVOICE] Email işleme tamamlandı. Stats: {stats}")
-        logger.info(f"Email işleme tamamlandı. Stats: {stats}")
-        print(f"[INVOICE] Bildirim fonksiyonu çağrılıyor...")
-        show_summary_notification(stats, doc.subject)
-        print(f"[INVOICE] Bildirim fonksiyonu tamamlandı.")
+        # Database commit - hata olursa rollback yap
+        try:
+            frappe.db.commit()
+            logger.info(f"Email işleme tamamlandı. Stats: {stats}")
+            show_summary_notification(stats, doc.subject)
+        except Exception as commit_error:
+            frappe.db.rollback()
+            logger.error(f"Database commit hatası: {str(commit_error)}")
+            stats["errors"] = stats.get("errors", 0) + 1
+            frappe.log_error(
+                title="Invoice Email Processing - Database Commit Error",
+                message=f"Communication: {doc.name}\nSubject: {doc.subject}\nError: {str(commit_error)}\n{frappe.get_traceback()}"
+            )
+            # Commit hatası olsa bile kullanıcıya bildirim gönder
+            show_summary_notification(stats, doc.subject)
         
     except Exception as e:
-        print(f"[INVOICE] ❌ Email işleme hatası: {str(e)}")
         logger.error(f"Email işleme hatası: {str(e)}")
+        error_message = f"Communication: {doc.name}\nSubject: {doc.subject}\nError: {str(e)}\n{frappe.get_traceback()}"
         frappe.log_error(
             title="Invoice Email Processing Error",
-            message=f"Error: {str(e)}\n{frappe.get_traceback()}"
+            message=error_message
         )
+        # Ana exception'da da kullanıcıya hata bildirimi gönder
+        error_stats = {
+            "total_detected": 0,
+            "already_processed": 0,
+            "newly_processed": 0,
+            "errors": 1,
+            "invoices_created": []
+        }
+        try:
+            show_summary_notification(error_stats, doc.subject)
+        except Exception as notify_error:
+            logger.error(f"Error notification gönderme hatası: {str(notify_error)}")
 
 
 def create_invoice_from_pdf(communication_doc, pdf_attachment):
     """PDF'den Invoice kaydı oluştur"""
     file_name = pdf_attachment.get('file_name', '')
-    print(f"[INVOICE] PDF işleniyor: {file_name}")
     logger.info(f"PDF işleniyor: {file_name}")
     
     # Dosya adına göre platform tespiti (öncelikli)
     file_name_lower = file_name.lower() if file_name else ''
     platform_from_filename = detect_platform_from_filename(file_name_lower)
-    print(f"[INVOICE] Dosya adından platform: {platform_from_filename}")
     logger.info(f"Dosya adından platform: {platform_from_filename}")
     
     extracted_data = extract_invoice_data_from_pdf(pdf_attachment)
     
     # PDF içeriğinden platform tespiti
     platform_from_content = extracted_data.get("platform")
-    print(f"[INVOICE] İçerikten platform: {platform_from_content}")
     logger.info(f"İçerikten platform: {platform_from_content}")
     
     # Dosya adı tespiti öncelikli, yoksa içerik tespiti
@@ -198,24 +227,19 @@ def create_invoice_from_pdf(communication_doc, pdf_attachment):
     
     # ÖNEMLİ: Platform tespit edilemezse işleme (1&1, diğer faturalar gibi)
     if not platform or platform == "unknown":
-        print(f"[INVOICE] ⚠️ Platform tespit edilemedi, email atlanıyor: {file_name}")
         logger.warning(f"Platform tespit edilemedi, email atlanıyor: {file_name}")
         return None
     
-    print(f"[INVOICE] Seçilen platform: {platform}")
     logger.info(f"Seçilen platform: {platform}")
     
     if platform == "wolt":
-        print(f"[INVOICE] ✅ Wolt Invoice oluşturuluyor")
         logger.info("Wolt Invoice oluşturuluyor")
         return create_wolt_invoice_doc(communication_doc, pdf_attachment, extracted_data)
     
     if platform == "uber_eats":
-        print(f"[INVOICE] ✅ UberEats Invoice oluşturuluyor")
         logger.info("UberEats Invoice oluşturuluyor")
         return create_uber_eats_invoice_doc(communication_doc, pdf_attachment, extracted_data)
     
-    print(f"[INVOICE] ✅ Lieferando Invoice oluşturuluyor")
     logger.info("Lieferando Invoice oluşturuluyor")
     return create_lieferando_invoice_doc(communication_doc, pdf_attachment, extracted_data)
 
@@ -225,25 +249,16 @@ def create_lieferando_invoice_doc(communication_doc, pdf_attachment, extracted_d
     invoice_number = extracted_data.get("invoice_number")
     
     # Duplicate kontrolü: Sadece invoice_number (Rechnungsnummer) ile kontrol
-    if invoice_number:
-        existing_invoice = frappe.db.exists("Lieferando Invoice", {"invoice_number": invoice_number})
-        if existing_invoice:
-            print(f"[INVOICE] ⚠️ Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            logger.info(f"Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            return None
-        print(f"[INVOICE] ✅ Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-        logger.info(f"Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-    else:
-        print(f"[INVOICE] ⚠️ Invoice number bulunamadı, geçici numara kullanılacak")
-        logger.warning("Invoice number bulunamadı, geçici numara kullanılacak")
+    if _check_invoice_exists(DOCTYPE_LIEFERANDO_INVOICE, invoice_number):
+        return None
     
-    invoice = frappe.get_doc({
-        "doctype": "Lieferando Invoice",
+    invoice = frappe.new_doc(DOCTYPE_LIEFERANDO_INVOICE)
+    invoice.update({
         "invoice_number": invoice_number or generate_temp_invoice_number(),
         "invoice_date": extracted_data.get("invoice_date") or frappe.utils.today(),
         "period_start": extracted_data.get("period_start"),
         "period_end": extracted_data.get("period_end"),
-        "status": "Draft",
+        "status": FIELD_STATUS_DRAFT,
         "supplier_name": extracted_data.get("supplier_name") or "yd.yourdelivery GmbH",
         "supplier_email": extracted_data.get("supplier_email") or communication_doc.sender,
         "supplier_ust_idnr": extracted_data.get("supplier_ust_idnr"),
@@ -293,17 +308,21 @@ def create_lieferando_invoice_doc(communication_doc, pdf_attachment, extracted_d
         "raw_text": extracted_data.get("raw_text", "")
     })
     
+    # Child table'ları ekle (order_items ve tip_items)
     order_items = extracted_data.get("order_items", [])
     if order_items:
-        invoice.order_items = order_items
+        invoice.extend("order_items", order_items)
+    
+    tip_items = extracted_data.get("tip_items", [])
+    if tip_items:
+        invoice.extend("tip_items", tip_items)
     
     # name (ID) field'ını invoice_number (Rechnungsnummer) ile aynı yap
-    final_invoice_number = invoice_number or generate_temp_invoice_number()
-    invoice.name = final_invoice_number
+    invoice.name = invoice_number or generate_temp_invoice_number()
     
     invoice.insert(ignore_permissions=True, ignore_mandatory=True)
-    attach_pdf_to_invoice(pdf_attachment, invoice.name, "Lieferando Invoice")
-    notify_invoice_created("Lieferando Invoice", invoice.name, invoice.invoice_number, communication_doc.subject)
+    attach_pdf_to_invoice(pdf_attachment, invoice.name, DOCTYPE_LIEFERANDO_INVOICE)
+    notify_invoice_created(DOCTYPE_LIEFERANDO_INVOICE, invoice.name, invoice.invoice_number, communication_doc.subject)
     
     return invoice
 
@@ -313,25 +332,16 @@ def create_wolt_invoice_doc(communication_doc, pdf_attachment, extracted_data):
     invoice_number = extracted_data.get("invoice_number")
     
     # Duplicate kontrolü: Sadece invoice_number (Rechnungsnummer) ile kontrol
-    if invoice_number:
-        existing_invoice = frappe.db.exists("Wolt Invoice", {"invoice_number": invoice_number})
-        if existing_invoice:
-            print(f"[INVOICE] ⚠️ Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            logger.info(f"Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            return None
-        print(f"[INVOICE] ✅ Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-        logger.info(f"Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-    else:
-        print(f"[INVOICE] ⚠️ Invoice number bulunamadı, geçici numara kullanılacak")
-        logger.warning("Invoice number bulunamadı, geçici numara kullanılacak")
+    if _check_invoice_exists(DOCTYPE_WOLT_INVOICE, invoice_number):
+        return None
     
-    invoice = frappe.get_doc({
-        "doctype": "Wolt Invoice",
+    invoice = frappe.new_doc(DOCTYPE_WOLT_INVOICE)
+    invoice.update({
         "invoice_number": invoice_number or generate_temp_invoice_number(),
         "invoice_date": extracted_data.get("invoice_date") or frappe.utils.today(),
         "period_start": extracted_data.get("period_start"),
         "period_end": extracted_data.get("period_end"),
-        "status": "Draft",
+        "status": FIELD_STATUS_DRAFT,
         "supplier_name": extracted_data.get("supplier_name") or "Wolt Enterprises Deutschland GmbH",
         "supplier_vat": extracted_data.get("supplier_vat"),
         "supplier_address": extracted_data.get("supplier_address"),
@@ -371,12 +381,11 @@ def create_wolt_invoice_doc(communication_doc, pdf_attachment, extracted_data):
     })
     
     # name (ID) field'ını invoice_number (Rechnungsnummer) ile aynı yap
-    final_invoice_number = invoice_number or generate_temp_invoice_number()
-    invoice.name = final_invoice_number
+    invoice.name = invoice_number or generate_temp_invoice_number()
     
     invoice.insert(ignore_permissions=True, ignore_mandatory=True)
-    attach_pdf_to_invoice(pdf_attachment, invoice.name, "Wolt Invoice")
-    notify_invoice_created("Wolt Invoice", invoice.name, invoice.invoice_number, communication_doc.subject)
+    attach_pdf_to_invoice(pdf_attachment, invoice.name, DOCTYPE_WOLT_INVOICE)
+    notify_invoice_created(DOCTYPE_WOLT_INVOICE, invoice.name, invoice.invoice_number, communication_doc.subject)
     
     return invoice
 
@@ -402,13 +411,11 @@ def check_pdf_has_uber_eats_header(pdf_attachment):
                 has_header = "bestell- und zahlungsübersicht" in normalized or "bestell- und zahlungsübersicht" in first_page_text
                 
                 result = has_header
-                print(f"[INVOICE] PDF UberEats header kontrolü: {pdf_attachment.file_name} → {result}")
                 logger.debug(f"PDF UberEats header kontrolü: {pdf_attachment.file_name} → {result}")
                 return result
         
         return False
     except Exception as e:
-        print(f"[INVOICE] ⚠️ PDF UberEats header kontrolü hatası: {str(e)}")
         logger.warning(f"PDF UberEats header kontrolü hatası: {str(e)}")
         return False
 
@@ -435,13 +442,11 @@ def check_pdf_has_selbstfakturierung(pdf_attachment):
                 has_selbstfakturierung = "selbstfakturierung" in normalized
                 
                 result = has_rechnung and has_selbstfakturierung
-                print(f"[INVOICE] PDF Selbstfakturierung kontrolü: {pdf_attachment.file_name} → {result} (Rechnung: {has_rechnung}, Selbstfakturierung: {has_selbstfakturierung})")
                 logger.debug(f"PDF Selbstfakturierung kontrolü: {pdf_attachment.file_name} → {result}")
                 return result
         
         return False
     except Exception as e:
-        print(f"[INVOICE] ⚠️ PDF Selbstfakturierung kontrolü hatası: {str(e)}")
         logger.warning(f"PDF Selbstfakturierung kontrolü hatası: {str(e)}")
         return False
 
@@ -463,13 +468,11 @@ def check_pdf_has_wolt_netting_report(pdf_attachment):
                 normalized = (first_page_text or "").lower()
                 
                 has_header = "übersicht umsätze und auszahlungen" in normalized
-                print(f"[INVOICE] PDF Netting header kontrolü: {pdf_attachment.file_name} → {has_header}")
                 logger.debug(f"PDF Netting header kontrolü: {pdf_attachment.file_name} → {has_header}")
                 return has_header
         
         return False
     except Exception as e:
-        print(f"[INVOICE] ⚠️ PDF Netting header kontrolü hatası: {str(e)}")
         logger.warning(f"PDF Netting header kontrolü hatası: {str(e)}")
         return False
 
@@ -498,7 +501,6 @@ def extract_invoice_data_from_pdf(pdf_attachment):
         uber_rechnung_match = re.search(r'Rechnungsnummer:\s*([A-Z0-9_\-]+)', full_text, re.IGNORECASE)
         if uber_rechnung_match:
             data["invoice_number"] = uber_rechnung_match.group(1).strip()
-            print(f"[INVOICE] ✅ UberEats Rechnungsnummer bulundu: {data['invoice_number']}")
             logger.info(f"UberEats Rechnungsnummer bulundu: {data['invoice_number']}")
         else:
             # Rechnungsnummer extraction - Wolt faturaları için özel pattern
@@ -506,7 +508,6 @@ def extract_invoice_data_from_pdf(pdf_attachment):
             rechnung_match = re.search(r'Rechnungsnummer[\s:]+([A-Z]{3}/\d{2}/[A-Z0-9]+(?:/\d+)+)', full_text, re.IGNORECASE)
             if rechnung_match:
                 data["invoice_number"] = rechnung_match.group(1).strip()
-                print(f"[INVOICE] ✅ Rechnungsnummer bulundu: {data['invoice_number']}")
                 logger.info(f"Rechnungsnummer bulundu: {data['invoice_number']}")
             else:
                 # Fallback: Daha genel pattern'ler
@@ -524,7 +525,6 @@ def extract_invoice_data_from_pdf(pdf_attachment):
                         # USt.-ID formatını (DE123456789) filtrele
                         if not re.match(r'^DE\d{9}$', invoice_num):
                             data["invoice_number"] = invoice_num
-                            print(f"[INVOICE] ✅ Rechnungsnummer bulundu (fallback): {data['invoice_number']}")
                             logger.info(f"Rechnungsnummer bulundu (fallback): {data['invoice_number']}")
                             break
         
@@ -592,17 +592,14 @@ def extract_invoice_data_from_pdf(pdf_attachment):
 def detect_platform_from_filename(file_name: str) -> str:
     """Dosya adından platform tespit et"""
     if not file_name:
-        print(f"[INVOICE] detect_platform_from_filename: Dosya adı boş")
         logger.debug("detect_platform_from_filename: Dosya adı boş")
         return None
     
     file_name_lower = file_name.lower()
-    print(f"[INVOICE] detect_platform_from_filename: {file_name_lower}")
     logger.debug(f"detect_platform_from_filename: {file_name_lower}")
     
     # ÖNEMLİ: "rechnung_und" ile başlayan dosyalar kesinlikle Lieferando
     if file_name_lower.startswith("rechnung_und"):
-        print(f"[INVOICE] ✅ Lieferando pattern eşleşti: rechnung_und (başlangıç)")
         logger.info("Lieferando pattern eşleşti: rechnung_und (başlangıç)")
         return "lieferando"
     
@@ -622,7 +619,6 @@ def detect_platform_from_filename(file_name: str) -> str:
     
     for pattern, pattern_name in wolt_patterns:
         if re.search(pattern, file_name_lower):
-            print(f"[INVOICE] ✅ Wolt pattern eşleşti: {pattern_name}")
             logger.info(f"Wolt pattern eşleşti: {pattern_name}")
             return "wolt"
     
@@ -637,11 +633,9 @@ def detect_platform_from_filename(file_name: str) -> str:
     
     for pattern, pattern_name in lieferando_patterns:
         if re.search(pattern, file_name_lower):
-            print(f"[INVOICE] ✅ Lieferando pattern eşleşti: {pattern_name}")
             logger.info(f"Lieferando pattern eşleşti: {pattern_name}")
             return "lieferando"
     
-    print(f"[INVOICE] ⚠️ Dosya adından platform tespit edilemedi")
     logger.debug("Dosya adından platform tespit edilemedi")
     return None
 
@@ -652,7 +646,6 @@ def detect_invoice_platform(full_text: str) -> str:
     
     # ÖNEMLİ: "Bestell- und Zahlungsübersicht" UberEats faturalarının karakteristik özelliği
     if "bestell- und zahlungsübersicht" in normalized or "bestell- und zahlungsübersicht" in full_text:
-        print(f"[INVOICE] ✅ UberEats tespit edildi: 'Bestell- und Zahlungsübersicht' başlığı bulundu")
         logger.info("UberEats tespit edildi: 'Bestell- und Zahlungsübersicht' başlığı bulundu")
         return "uber_eats"
     
@@ -665,7 +658,6 @@ def detect_invoice_platform(full_text: str) -> str:
     if "rechnung" in normalized and "selbstfakturierung" in normalized:
         # Lieferando değilse Wolt olarak işaretle
         if "lieferando" not in normalized and "yourdelivery" not in normalized and "takeaway" not in normalized:
-            print(f"[INVOICE] ✅ Wolt tespit edildi: 'Rechnung (Selbstfakturierung)' başlığı bulundu")
             logger.info("Wolt tespit edildi: 'Rechnung (Selbstfakturierung)' başlığı bulundu")
             return "wolt"
     
@@ -1126,21 +1118,18 @@ def handle_wolt_netting_report(communication_doc, pdf_attachment):
             invoice_number = invoice_number.upper()
         
         if not invoice_number:
-            print(f"[INVOICE] ⚠️ Netting raporunda Rechnungsnummer bulunamadı: {pdf_attachment.file_name}")
             logger.warning(f"Netting raporunda Rechnungsnummer bulunamadı: {pdf_attachment.file_name}")
             return
         
-        existing_invoice = frappe.db.exists("Wolt Invoice", {"invoice_number": invoice_number})
+        existing_invoice = frappe.db.exists(DOCTYPE_WOLT_INVOICE, {"invoice_number": invoice_number})
         if not existing_invoice:
-            print(f"[INVOICE] ⚠️ Netting raporu için Wolt Invoice bulunamadı (Rechnungsnummer: {invoice_number})")
             logger.warning(f"Netting raporu için Wolt Invoice bulunamadı (Rechnungsnummer: {invoice_number})")
             return
         
-        print(f"[INVOICE] ✅ Netting raporu Wolt Invoice'a eklenecek (Rechnungsnummer: {invoice_number})")
         logger.info(f"Netting raporu Wolt Invoice'a eklenecek (Rechnungsnummer: {invoice_number})")
         
         # PDF'i yeni alana attach et
-        attach_pdf_to_invoice_with_field(pdf_attachment, invoice_number, "Wolt Invoice", "netting_report_pdf")
+        attach_pdf_to_invoice(pdf_attachment, invoice_number, DOCTYPE_WOLT_INVOICE, FIELD_NETTING_REPORT_PDF)
         
         # Raw text ve parse edilmiş alanları sakla
         update_values = {"netting_raw_text": full_text}
@@ -1148,7 +1137,6 @@ def handle_wolt_netting_report(communication_doc, pdf_attachment):
         parsed_fields = extract_netting_fields(full_text)
         if parsed_fields:
             update_values["netting_parsed_json"] = json.dumps(parsed_fields, ensure_ascii=True)
-            print(f"[INVOICE] ℹ️ Netting parsed fields: {parsed_fields}")
             logger.info(f"Netting parsed fields: {parsed_fields}")
             
             # Ayrı alanlara yaz (görünür özet)
@@ -1174,34 +1162,6 @@ def handle_wolt_netting_report(communication_doc, pdf_attachment):
             title="Wolt Netting Report Processing Error",
             message=f"PDF: {pdf_attachment.file_name}\nError: {str(e)}\n{frappe.get_traceback()}"
         )
-
-
-def extract_netting_penalty_amount(full_text: str):
-    """Netting raporundaki ceza/penalty tutarını yakala. Bulamazsa None döner."""
-    if not full_text:
-        return None
-    
-    # Önce ceza ile ilgili anahtar kelimelerle aynı satırdaki miktarı yakala
-    penalty_keywords = [
-        "penalty", "strafe", "konventionalstrafe", "ceza", "cezasi", "cezası",
-        "gebühr", "fee"
-    ]
-    lines = [ln.strip() for ln in full_text.splitlines() if ln.strip()]
-    amount_pattern = r'[-+]?\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}'
-    
-    for ln in lines:
-        lower_ln = ln.lower()
-        if any(k in lower_ln for k in penalty_keywords):
-            amt_match = re.search(amount_pattern, ln)
-            if amt_match:
-                return parse_decimal(amt_match.group(0))
-    
-    # Anahtar kelime yoksa, negatif miktarları tara (ilk negatif miktarı ceza varsay)
-    negative_matches = re.findall(r'-\d{1,3}(?:\.\d{3})*,\d{2}|-\d+,\d{2}', full_text)
-    if negative_matches:
-        return parse_decimal(negative_matches[0])
-    
-    return None
 
 
 def extract_netting_fields(full_text: str) -> dict:
@@ -1266,7 +1226,6 @@ def extract_wolt_fields(full_text: str) -> dict:
     rechnung_match = re.search(r'Rechnungsnummer[\s:]+([A-Z]{3}/\d{2}/[A-Z0-9]+(?:/\d+)+)', full_text, re.IGNORECASE)
     if rechnung_match:
         data["invoice_number"] = rechnung_match.group(1).strip()
-        print(f"[INVOICE] ✅ Wolt Rechnungsnummer bulundu: {data['invoice_number']}")
         logger.info(f"Wolt Rechnungsnummer bulundu: {data['invoice_number']}")
     
     supplier_match = re.search(r'Bill To\s+(.*?)Leistungszeitraum', full_text, re.DOTALL)
@@ -1365,7 +1324,6 @@ def extract_uber_eats_fields(full_text: str) -> dict:
     rechnung_match = re.search(r'Rechnungsnummer:\s*([A-Z0-9_\-]+)', full_text, re.IGNORECASE)
     if rechnung_match:
         data["invoice_number"] = rechnung_match.group(1).strip()
-        print(f"[INVOICE] ✅ UberEats Rechnungsnummer bulundu: {data['invoice_number']}")
         logger.info(f"UberEats Rechnungsnummer bulundu: {data['invoice_number']}")
     
     # Rechnungsdatum
@@ -1514,26 +1472,17 @@ def create_uber_eats_invoice_doc(communication_doc, pdf_attachment, extracted_da
     invoice_number = extracted_data.get("invoice_number")
     
     # Duplicate kontrolü: Sadece invoice_number (Rechnungsnummer) ile kontrol
-    if invoice_number:
-        existing_invoice = frappe.db.exists("Uber Eats Invoice", {"invoice_number": invoice_number})
-        if existing_invoice:
-            print(f"[INVOICE] ⚠️ Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            logger.info(f"Fatura zaten işlenmiş (Rechnungsnummer: {invoice_number})")
-            return None
-        print(f"[INVOICE] ✅ Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-        logger.info(f"Yeni fatura tespit edildi (Rechnungsnummer: {invoice_number})")
-    else:
-        print(f"[INVOICE] ⚠️ Invoice number bulunamadı, geçici numara kullanılacak")
-        logger.warning("Invoice number bulunamadı, geçici numara kullanılacak")
+    if _check_invoice_exists(DOCTYPE_UBER_EATS_INVOICE, invoice_number):
+        return None
     
-    invoice = frappe.get_doc({
-        "doctype": "Uber Eats Invoice",
+    invoice = frappe.new_doc(DOCTYPE_UBER_EATS_INVOICE)
+    invoice.update({
         "invoice_number": invoice_number or generate_temp_invoice_number(),
         "invoice_date": extracted_data.get("invoice_date") or frappe.utils.today(),
         "tax_date": extracted_data.get("tax_date"),
         "period_start": extracted_data.get("period_start"),
         "period_end": extracted_data.get("period_end"),
-        "status": "Draft",
+        "status": FIELD_STATUS_DRAFT,
         "supplier_name": extracted_data.get("supplier_name") or "Uber Eats Germany GmbH",
         "supplier_vat": extracted_data.get("supplier_vat"),
         "supplier_address": extracted_data.get("supplier_address"),
@@ -1564,12 +1513,11 @@ def create_uber_eats_invoice_doc(communication_doc, pdf_attachment, extracted_da
     })
     
     # name (ID) field'ını invoice_number (Rechnungsnummer) ile aynı yap
-    final_invoice_number = invoice_number or generate_temp_invoice_number()
-    invoice.name = final_invoice_number
+    invoice.name = invoice_number or generate_temp_invoice_number()
     
     invoice.insert(ignore_permissions=True, ignore_mandatory=True)
-    attach_pdf_to_invoice(pdf_attachment, invoice.name, "Uber Eats Invoice")
-    notify_invoice_created("Uber Eats Invoice", invoice.name, invoice.invoice_number, communication_doc.subject)
+    attach_pdf_to_invoice(pdf_attachment, invoice.name, DOCTYPE_UBER_EATS_INVOICE)
+    notify_invoice_created(DOCTYPE_UBER_EATS_INVOICE, invoice.name, invoice.invoice_number, communication_doc.subject)
     
     return invoice
 
@@ -1594,37 +1542,8 @@ def parse_decimal(value: str | None):
         return None
 
 
-def attach_pdf_to_invoice(pdf_attachment, invoice_name, target_doctype):
+def attach_pdf_to_invoice(pdf_attachment, invoice_name, target_doctype, target_field=FIELD_PDF_FILE):
     """PDF'i Invoice kaydına attach et"""
-    try:
-        file_doc = frappe.get_doc("File", pdf_attachment.name)
-        file_content = file_doc.get_content()
-        
-        new_file = frappe.get_doc({
-            "doctype": "File",
-            "file_name": file_doc.file_name,
-            "attached_to_doctype": target_doctype,
-            "attached_to_name": invoice_name,
-            "attached_to_field": "pdf_file",
-            "is_private": 0,
-            "content": file_content,
-            "folder": "Home/Attachments"
-        })
-        new_file.flags.ignore_permissions = True
-        new_file.insert()
-        
-        frappe.db.set_value(target_doctype, invoice_name, "pdf_file", new_file.file_url)
-        frappe.db.commit()
-        
-    except Exception as e:
-        frappe.log_error(
-            title="PDF Attachment Error",
-            message=f"Error: {str(e)}\n{frappe.get_traceback()}"
-        )
-
-
-def attach_pdf_to_invoice_with_field(pdf_attachment, invoice_name, target_doctype, target_field):
-    """PDF'i belirtilen alana attach et (custom alanlar için)"""
     try:
         file_doc = frappe.get_doc("File", pdf_attachment.name)
         file_content = file_doc.get_content()
@@ -1705,6 +1624,16 @@ def notify_invoice_created(doctype, docname, invoice_number, email_subject):
         logger.error(f"Bildirim gönderme hatası: {str(e)}")
 
 
+def _get_active_system_users():
+    """Get list of active system users"""
+    active_users = frappe.get_all(
+        "User",
+        filters={"enabled": 1, "user_type": USER_TYPE_SYSTEM},
+        fields=["name"]
+    )
+    return [user.name for user in active_users]
+
+
 def _get_session_stats():
     """Session bazlı istatistikleri al"""
     session_key = "invoice_processing_stats"
@@ -1734,18 +1663,14 @@ def _update_session_stats(stats):
 
 def show_summary_notification(stats, email_subject, is_final=False):
     """Email işleme özetini göster - hem realtime hem de Notification Log olarak"""
-    print(f"[INVOICE] show_summary_notification çağrıldı. Stats: {stats}, Subject: {email_subject}")
     try:
         from frappe.utils.data import get_url_to_form
         from frappe.desk.doctype.notification_log.notification_log import enqueue_create_notification
         
-        print(f"[INVOICE] Import'lar tamamlandı")
         
         try:
             _update_session_stats(stats)
-            print(f"[INVOICE] Session stats güncellendi")
         except Exception as e:
-            print(f"[INVOICE] ⚠️ Session stats hatası (devam ediliyor): {str(e)}")
             logger.warning(f"Session stats hatası: {str(e)}")
         
         total_detected = stats.get("total_detected", 0)
@@ -1754,11 +1679,9 @@ def show_summary_notification(stats, email_subject, is_final=False):
         errors = stats.get("errors", 0)
         invoices_created = stats.get("invoices_created", [])
         
-        print(f"[INVOICE] Bildirim gönderiliyor. Stats: total={total_detected}, new={newly_processed}, already={already_processed}, errors={errors}")
         logger.info(f"Bildirim gönderiliyor. Stats: total={total_detected}, new={newly_processed}, already={already_processed}, errors={errors}")
         
         if total_detected == 0 and already_processed == 0:
-            print(f"[INVOICE] Bildirim gönderilmedi - istatistik yok (total={total_detected}, already={already_processed})")
             logger.info("Bildirim gönderilmedi - istatistik yok")
             return
         
@@ -1798,23 +1721,13 @@ def show_summary_notification(stats, email_subject, is_final=False):
             indicator = "green"
         
         # Realtime bildirim (anlık popup) - her zaman gönder
-        print(f"[INVOICE] Realtime bildirim hazırlanıyor...")
         try:
-            current_user = frappe.session.user if hasattr(frappe, 'session') and hasattr(frappe.session, 'user') else None
-            print(f"[INVOICE] Current user: {current_user}")
-            
             # Tüm aktif kullanıcılara bildirim gönder
-            active_users = frappe.get_all("User", 
-                filters={"enabled": 1, "user_type": "System User"},
-                fields=["name"]
-            )
-            user_list = [user.name for user in active_users] if active_users else []
+            user_list = _get_active_system_users()
             
             if not user_list:
-                print(f"[INVOICE] ⚠️ Aktif kullanıcı bulunamadı, bildirim gönderilemiyor")
                 logger.warning("Aktif kullanıcı bulunamadı")
             else:
-                print(f"[INVOICE] Bildirim gönderilecek kullanıcılar: {user_list}")
                 
                 # Her kullanıcıya bildirim gönder
                 for user in user_list:
@@ -1830,14 +1743,11 @@ def show_summary_notification(stats, email_subject, is_final=False):
                             user=user,
                             after_commit=True
                         )
-                        print(f"[INVOICE] ✅ Bildirim gönderildi: {user}")
                     except Exception as e:
-                        print(f"[INVOICE] ❌ Kullanıcı {user} için bildirim hatası: {str(e)}")
                         logger.error(f"Kullanıcı {user} için bildirim hatası: {str(e)}")
                 
                 logger.info(f"Realtime bildirim gönderildi - {len(user_list)} kullanıcıya")
         except Exception as e:
-            print(f"[INVOICE] ❌ Realtime bildirim hatası: {str(e)}")
             logger.error(f"Realtime bildirim hatası: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
@@ -1855,18 +1765,12 @@ def show_summary_notification(stats, email_subject, is_final=False):
                 "email_content": message,
             }
             
-            active_users = frappe.get_all("User", 
-                filters={"enabled": 1, "user_type": "System User"},
-                fields=["name"]
-            )
-            user_emails = [user.name for user in active_users]
+            user_emails = _get_active_system_users()
             
             if user_emails:
                 enqueue_create_notification(user_emails, notification_doc)
-                print(f"[INVOICE] ✅ Notification Log gönderildi - {len(user_emails)} kullanıcıya")
                 logger.info(f"Notification Log gönderildi - {len(user_emails)} kullanıcıya")
             else:
-                print(f"[INVOICE] ⚠️ Notification Log gönderilmedi - aktif kullanıcı bulunamadı")
                 logger.warning("Notification Log gönderilmedi - aktif kullanıcı bulunamadı")
         except Exception as e:
             logger.error(f"Notification Log gönderme hatası: {str(e)}")
@@ -1954,14 +1858,98 @@ def _send_final_summary(session_stats):
             "email_content": message,
         }
         
-        active_users = frappe.get_all("User", 
-            filters={"enabled": 1, "user_type": "System User"},
-            fields=["name"]
-        )
-        user_emails = [user.name for user in active_users]
+        user_emails = _get_active_system_users()
         
         if user_emails:
             enqueue_create_notification(user_emails, notification_doc)
         
     except Exception as e:
         logger.error(f"Toplu özet bildirimi gönderme hatası: {str(e)}")
+
+
+@frappe.whitelist()
+def generate_and_attach_analysis_pdf(analysis_name):
+    """
+    Lieferando Invoice Analysis için print format'a göre PDF oluştur ve attach et
+    "Yazdır ve PDF olarak kaydet" butonu ile aynı süreci kullanır
+    
+    Args:
+        analysis_name: Lieferando Invoice Analysis doküman adı
+        
+    Returns:
+        dict: {"success": bool, "message": str, "file_name": str}
+    """
+    try:
+        from invoice.api.constants import DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS
+        from frappe.utils.print_format import validate_print_permission
+        from frappe.translate import print_language
+        
+        # Analysis dokümanını kontrol et
+        if not frappe.db.exists(DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS, analysis_name):
+            frappe.throw(_("Lieferando Invoice Analysis bulunamadı: {0}").format(analysis_name))
+        
+        analysis_doc = frappe.get_doc(DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS, analysis_name)
+        print_format = "Lieferando Invoice Analysis Format"
+        
+        # Print permission kontrolü (download_pdf endpoint'i ile aynı)
+        validate_print_permission(analysis_doc)
+        
+        # PDF oluştur - download_pdf endpoint'i ile AYNI süreç
+        # download_pdf endpoint'i: frappe.utils.print_format.download_pdf
+        # Bu endpoint frappe.get_print kullanır
+        with print_language(None):
+            pdf_data = frappe.get_print(
+                doctype=DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS,
+                name=analysis_name,
+                print_format=print_format,
+                doc=analysis_doc,
+                as_pdf=True,
+                no_letterhead=1
+            )
+        
+        # Dosya adı oluştur (download_pdf ile aynı format)
+        file_name = "{name}.pdf".format(name=analysis_name.replace(" ", "-").replace("/", "-"))
+        
+        # Eski PDF dosyasını kontrol et ve sil (varsa)
+        old_files = frappe.get_all(
+            "File",
+            filters={
+                "attached_to_doctype": DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS,
+                "attached_to_name": analysis_name,
+                "file_name": file_name
+            },
+            fields=["name"]
+        )
+        for old_file in old_files:
+            try:
+                frappe.delete_doc("File", old_file.name, ignore_permissions=True)
+            except Exception:
+                pass
+        
+        # File dokümanı oluştur ve attach et
+        file_doc = frappe.new_doc("File")
+        file_doc.file_name = file_name
+        file_doc.content = pdf_data
+        file_doc.attached_to_doctype = DOCTYPE_LIEFERANDO_INVOICE_ANALYSIS
+        file_doc.attached_to_name = analysis_name
+        file_doc.is_private = 0
+        file_doc.flags.ignore_permissions = True
+        file_doc.insert()
+        frappe.db.commit()
+        
+        return {
+            "success": True,
+            "message": _("PDF başarıyla oluşturuldu ve eklendi"),
+            "file_name": file_name,
+            "file_url": file_doc.file_url
+        }
+        
+    except Exception as e:
+        frappe.log_error(
+            title="PDF Oluşturma Hatası",
+            message=f"Analysis: {analysis_name}\nError: {str(e)}\n{frappe.get_traceback()}"
+        )
+        return {
+            "success": False,
+            "message": _("PDF oluşturulurken hata oluştu: {0}").format(str(e))
+        }

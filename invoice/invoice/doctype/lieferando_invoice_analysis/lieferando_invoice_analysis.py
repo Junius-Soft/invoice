@@ -7,27 +7,12 @@ from frappe.utils import flt
 from invoice.api.constants import (
 	SERVICE_FEE_OWN_DELIVERY,
 	SERVICE_FEE_DELIVERY,
-	DEFAULT_CULINARY_ACCOUNT_FEE
+	DEFAULT_CULINARY_ACCOUNT_FEE,
+	DOCTYPE_LIEFERANDO_INVOICE
 )
 
 
 class LieferandoInvoiceAnalysis(Document):
-	def before_insert(self):
-		"""Validate required fields before insert"""
-		if not self.lieferando_invoice:
-			frappe.throw(
-				"Lieferando Faturası alanı zorunludur. Lütfen bir Lieferando Faturası seçin.",
-				title="Eksik Alanlar"
-			)
-	
-	def before_save(self):
-		"""Validate required fields before save"""
-		if not self.lieferando_invoice:
-			frappe.throw(
-				"Lieferando Faturası alanı zorunludur. Lütfen bir Lieferando Faturası seçin.",
-				title="Eksik Alanlar"
-			)
-	
 	def validate(self):
 		"""Load data from Lieferando Invoice and calculate all amounts"""
 		# Validate that lieferando_invoice is selected
@@ -64,14 +49,14 @@ class LieferandoInvoiceAnalysis(Document):
 				title="Missing Information"
 			)
 		
-		if not frappe.db.exists("Lieferando Invoice", self.lieferando_invoice):
+		if not frappe.db.exists(DOCTYPE_LIEFERANDO_INVOICE, self.lieferando_invoice):
 			frappe.throw(
 				f"Lieferando Invoice '{self.lieferando_invoice}' not found.",
 				title="Invoice Not Found"
 			)
 		
 		try:
-			invoice = frappe.get_doc("Lieferando Invoice", self.lieferando_invoice)
+			invoice = frappe.get_doc(DOCTYPE_LIEFERANDO_INVOICE, self.lieferando_invoice)
 		except frappe.DoesNotExistError:
 			frappe.throw(
 				f"Lieferando Invoice '{self.lieferando_invoice}' not found in database.",
@@ -239,12 +224,10 @@ class LieferandoInvoiceAnalysis(Document):
 			errors.append(f"Cash Paid Orders cannot be negative: {self.cash_paid_orders}")
 		
 		if not flt(self.service_fee_rate) and self.lieferando_invoice:
-			try:
-				invoice = frappe.get_doc("Lieferando Invoice", self.lieferando_invoice)
-				if not flt(invoice.service_fee_rate):
-					errors.append("Service Fee Rate (service_fee_rate) not specified. Please enter manually.")
-			except:
-				errors.append("Service Fee Rate (service_fee_rate) not specified and could not be loaded from invoice. Please enter manually.")
+			# Service fee rate validation is handled in load_from_invoice()
+			# If it's still empty after load, it's an error
+			if not flt(self.service_fee_rate):
+				errors.append("Service Fee Rate (service_fee_rate) not specified. Please enter manually.")
 		
 		if flt(self.service_fee_rate) < 0:
 			errors.append(f"Service Fee Rate cannot be negative: {self.service_fee_rate}%")
@@ -296,7 +279,7 @@ class LieferandoInvoiceAnalysis(Document):
 			)
 		
 		try:
-			invoice = frappe.get_doc("Lieferando Invoice", self.lieferando_invoice)
+			invoice = frappe.get_doc(DOCTYPE_LIEFERANDO_INVOICE, self.lieferando_invoice)
 		except Exception as e:
 			frappe.log_error(
 				title="Calculation: Invoice Load Error",
